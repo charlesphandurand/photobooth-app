@@ -1,22 +1,19 @@
-import React, { useState, useRef, useEffect, createContext, useContext } from 'react';
+import React, { useState, useRef, useEffect, createContext, useContext, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, getDoc, setDoc, collection, onSnapshot, updateDoc } from 'firebase/firestore';
-// Perhatikan bahwa 'query' dan 'getDocs' telah dihapus dari import terakhir karena tidak digunakan langsung di AppProvider.
 
 // ==========================================================
 // PENTING: Ubah konfigurasi Firebase Anda di bawah ini!
-// Ganti nilai PASTE_YOUR_... dengan detail proyek Firebase Anda.
-// (Anda sudah mendapatkan ini dari Firebase Console)
 // ==========================================================
 const firebaseConfig = {
-  apiKey: "AIzaSyC2gp3HfULCYeFbNzAuMSNxH4TMuR-V3zg",
-  authDomain: "photobooth-a2f3e.firebaseapp.com",
-  projectId: "photobooth-a2f3e",
-  storageBucket: "photobooth-a2f3e.firebasestorage.app",
-  messagingSenderId: "240496851594",
-  appId: "1:240496851594:web:5b9cc8827eba5e561d0b73",
-  measurementId: "G-6N8QGB4TGV"
+  apiKey: "AIzaSyC2gp3HfULCYeFbNzAuMSNxH4TMuR-V3zg", // Gunakan API Key Anda
+  authDomain: "photobooth-a2f3e.firebaseapp.com", // Gunakan Auth Domain Anda
+  projectId: "photobooth-a2f3e", // Gunakan Project ID Anda
+  storageBucket: "photobooth-a2f3e.firebasestorage.app", // Gunakan Storage Bucket Anda
+  messagingSenderId: "240496851594", // Gunakan Messaging Sender ID Anda
+  appId: "1:240496851594:web:5b9cc8827eba5e561d0b73", // Gunakan App ID Anda (penting untuk Firestore)
+  measurementId: "G-6N8QGB4TGV" // Gunakan Measurement ID Anda (opsional)
 };
 
 // Gunakan projectId sebagai appId untuk Firestore path
@@ -46,10 +43,16 @@ const AppProvider = ({ children }) => {
     try {
       const app = initializeApp(firebaseConfig);
       const firestore = getFirestore(app);
-      const authentication = getAuth(app);
+      const authentication = getAuth(app); // Menginisialisasi Firebase Authentication
 
       setDb(firestore);
       setAuth(authentication);
+
+      // PENTING: Jika Anda mendapatkan error 'auth/configuration-not-found',
+      // pastikan Anda telah mengaktifkan Firebase Authentication di konsol Firebase Anda:
+      // Kunjungi https://console.firebase.google.com/project/<YOUR_PROJECT_ID>/authentication
+      // Lalu, klik 'Get started' dan aktifkan setidaknya metode 'Anonymous' atau 'Email/Password'.
+      // Ganti <YOUR_PROJECT_ID> dengan project ID Anda (photobooth-a2f3e).
 
       // Listener untuk perubahan status autentikasi
       const unsubscribe = onAuthStateChanged(authentication, async (user) => {
@@ -144,7 +147,7 @@ const AppProvider = ({ children }) => {
     addSampleFrames(); // Panggil untuk menambahkan data contoh jika belum ada
 
     return () => unsubscribe();
-  }, [db, isAuthReady, appId, selectedFrame]); // Tambahkan selectedFrame ke dependency array agar useEffect berjalan saat frame terpilih berubah
+  }, [db, isAuthReady, appId, selectedFrame]);
 
   // Fungsi untuk mengatur ulang sesi
   const resetSession = () => {
@@ -193,99 +196,192 @@ const MessageModal = ({ message, onClose }) => {
 };
 
 
-// 1. Boarding Screen
+// ----------------------------------------------------------------------------------------------1. Boarding Screen
 const BoardingScreen = () => {
+  const { setCurrentScreen } = useContext(AppContext);
   const videoRef = useRef(null);
-  const { setCurrentScreen, isAuthReady, userId } = useContext(AppContext);
+  const [cameraLoading, setCameraLoading] = useState(true);
+  const [cameraError, setCameraError] = useState(false);
   const [message, setMessage] = useState('');
+  const [retryCount, setRetryCount] = useState(0);
+  const maxRetries = 3;
+  const streamRef = useRef(null);
 
-  useEffect(() => {
-    const startWebcam = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-      } catch (err) {
-        console.error("Error accessing webcam:", err);
-        setMessage("Tidak dapat mengakses kamera. Pastikan kamera terhubung dan diizinkan.");
+  const releaseCamera = async () => {
+    try {
+      if (streamRef.current) {
+        const tracks = streamRef.current.getTracks();
+        tracks.forEach(track => {
+          track.stop();
+          console.log('Track stopped:', track.kind);
+        });
+        streamRef.current = null;
       }
-    };
-
-    startWebcam();
-
-    // Pastikan webcam dimatikan saat komponen di-unmount
-    return () => {
       if (videoRef.current && videoRef.current.srcObject) {
-        const tracks = videoRef.current.srcObject.getTracks();
-        tracks.forEach(track => track.stop());
+        videoRef.current.srcObject = null;
       }
-    };
-  }, []);
-
-  const handleAdminKeyClick = () => {
-    // Simulasikan mode fullscreen/admin dengan menavigasi ke halaman lain
-    // Di aplikasi nyata, ini akan meminta password admin atau otentikasi
-    if (document.documentElement.requestFullscreen) {
-      document.documentElement.requestFullscreen();
-      setMessage("Mode layar penuh diaktifkan. (Simulasi masuk admin)");
-    } else {
-      setMessage("Browser Anda tidak mendukung mode layar penuh.");
+      // Tunggu sebentar untuk memastikan kamera benar-benar dilepas
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (err) {
+      console.error('Error releasing camera:', err);
     }
   };
 
-  if (!isAuthReady) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-purple-400 to-indigo-600 text-white p-4">
-        <h1 className="text-4xl font-extrabold mb-4 animate-pulse">Memuat...</h1>
-        <p className="text-lg">Menunggu koneksi Firebase...</p>
-      </div>
-    );
-  }
+  const startWebcam = async () => {
+    setCameraLoading(true);
+    setCameraError(false);
+    try {
+      // Pastikan kamera dilepas terlebih dahulu
+      await releaseCamera();
+
+      // Coba akses kamera dengan berbagai konfigurasi
+      const constraints = [
+        {
+          video: { 
+            width: { ideal: 1280 }, 
+            height: { ideal: 720 },
+            facingMode: 'user'
+          }
+        },
+        {
+          video: { 
+            width: { ideal: 640 }, 
+            height: { ideal: 480 },
+            facingMode: 'user'
+          }
+        },
+        { video: true }
+      ];
+
+      let stream = null;
+      let error = null;
+
+      for (const constraint of constraints) {
+        try {
+          // Coba dapatkan stream dengan timeout
+          const streamPromise = navigator.mediaDevices.getUserMedia(constraint);
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout')), 5000)
+          );
+          
+          stream = await Promise.race([streamPromise, timeoutPromise]);
+          
+          if (stream) {
+            console.log('Berhasil mendapatkan stream dengan constraint:', constraint);
+            streamRef.current = stream;
+            break;
+          }
+        } catch (err) {
+          error = err;
+          console.log('Gagal dengan constraint:', constraint, err);
+          if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+          }
+          continue;
+        }
+      }
+
+      if (!stream) {
+        throw error || new Error('Tidak dapat mengakses kamera dengan konfigurasi apapun');
+      }
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadeddata = () => {
+          setCameraLoading(false);
+        };
+        // Fallback jika onloadeddata tidak terpanggil
+        setTimeout(() => {
+          if (videoRef.current.readyState === 4 && cameraLoading) {
+            setCameraLoading(false);
+          }
+        }, 3000);
+      }
+    } catch (err) {
+      console.error("Error mengakses webcam:", err);
+      setCameraError(true);
+      setCameraLoading(false);
+      
+      let errorMessage = 'Tidak dapat mengakses kamera: ';
+      switch(err.name) {
+        case 'NotAllowedError':
+          errorMessage += 'Izin kamera ditolak. Klik ikon kamera di address bar untuk mengizinkan.';
+          break;
+        case 'NotFoundError':
+          errorMessage += 'Kamera tidak ditemukan. Pastikan kamera terhubung.';
+          break;
+        case 'NotReadableError':
+          errorMessage += 'Kamera sedang digunakan. Silakan tutup aplikasi lain yang menggunakan kamera dan refresh halaman.';
+          break;
+        case 'Timeout':
+          errorMessage += 'Waktu akses kamera habis. Silakan refresh halaman.';
+          break;
+        default:
+          errorMessage += err.message;
+      }
+      setMessage(errorMessage);
+
+      // Coba ulang jika belum mencapai batas maksimum
+      if (retryCount < maxRetries) {
+        setRetryCount(prev => prev + 1);
+        setTimeout(() => {
+          startWebcam();
+        }, 2000);
+      }
+    }
+  };
+
+  useEffect(() => {
+    startWebcam();
+    return () => {
+      releaseCamera();
+    };
+  }, []);
 
   return (
-    <div className="relative flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-purple-400 to-indigo-600 text-white p-4">
+    <div className="fixed inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-red-500 to-orange-700 text-white overflow-hidden">
       <MessageModal message={message} onClose={() => setMessage('')} />
+      
+      <div className="relative w-full h-full flex flex-col items-center justify-center">
+        {/* Background Video */}
+        <div className="absolute inset-0 w-full h-full">
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-full object-cover"
+          />
+          {cameraLoading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
+              <div className="text-2xl font-bold">Memuat Kamera...</div>
+            </div>
+          )}
+          {cameraError && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
+              <div className="text-2xl font-bold text-red-500">Kamera Tidak Tersedia</div>
+            </div>
+          )}
+        </div>
 
-      {/* Admin Key Icon */}
-      <button
-        onClick={handleAdminKeyClick}
-        className="absolute top-4 left-4 p-3 bg-gray-800 bg-opacity-70 rounded-full shadow-lg text-white hover:bg-gray-700 transition-all duration-300 transform hover:scale-105"
-        title="Admin / Fullscreen"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 012 2v5a2 2 0 01-2 2h-5a2 2 0 01-2-2V9a2 2 0 012-2h5z" />
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12a2 2 0 002 2h2a2 2 0 002-2V9a2 2 0 00-2-2h-2a2 2 0 00-2 2v3z" />
-        </svg>
-      </button>
-
-      <h1 className="text-5xl md:text-7xl font-extrabold mb-8 drop-shadow-lg text-center">
-        Selamat Datang di Photobooth! 📸
-      </h1>
-      <p className="text-xl md:text-2xl mb-8 text-center px-4">
-        Siapkan senyuman terbaikmu!
-      </p>
-
-      <div className="relative w-full max-w-2xl aspect-video bg-gray-900 rounded-xl overflow-hidden shadow-2xl border-4 border-white mb-8">
-        <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover"></video>
-        <div className="absolute inset-0 flex items-center justify-center text-white text-3xl font-bold bg-black bg-opacity-50"
-             style={{ display: videoRef.current && videoRef.current.srcObject ? 'none' : 'flex' }}>
-          Memuat Kamera...
+        {/* Content Overlay */}
+        <div className="relative z-10 text-center px-4">
+          <h1 className="text-4xl md:text-6xl font-extrabold mb-6 drop-shadow-lg">
+            Selamat Datang di Photobooth! 📸
+          </h1>
+          <p className="text-xl md:text-2xl mb-8 drop-shadow-md">
+            Siap untuk berfoto? Pilih frame favoritmu dan mulai sesi foto!
+          </p>
+          <button
+            onClick={() => setCurrentScreen('frameSelection')}
+            disabled={cameraError}
+            className={`bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 px-8 rounded-full text-2xl shadow-lg transition-all duration-300 transform hover:scale-105
+              ${cameraError ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            Mulai Foto
+          </button>
         </div>
       </div>
-
-      <button
-        onClick={() => setCurrentScreen('tutorial')}
-        className="bg-pink-500 hover:bg-pink-600 text-white font-extrabold py-4 px-8 rounded-full shadow-lg text-2xl animate-bounce transition-all duration-300 transform hover:scale-110"
-      >
-        Mulai Sesi
-      </button>
-
-      {userId && (
-        <p className="absolute bottom-4 right-4 text-sm text-gray-200">
-          ID Pengguna: {userId}
-        </p>
-      )}
     </div>
   );
 };
@@ -360,7 +456,7 @@ const MenuScreen = () => {
     <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-blue-500 to-indigo-700 text-white p-4 text-center">
       <MessageModal message={message} onClose={() => setMessage('')} />
       <h1 className="text-4xl md:text-6xl font-extrabold mb-8 drop-shadow-lg">
-        Pilih Mode Foto Anda
+        Pilih Mode Foto Anda 
       </h1>
 
       <div className="flex flex-col md:flex-row gap-6 mb-12 w-full max-w-4xl">
@@ -426,7 +522,6 @@ const MenuScreen = () => {
 const FrameSelectionScreen = () => {
   const { setCurrentScreen, frames, selectedFrame, setSelectedFrame, sessionEndTime, sessionActive, resetSession } = useContext(AppContext);
   const [timeLeft, setTimeLeft] = useState(0);
-  const [message, setMessage] = useState('');
 
   // Timer sesi
   useEffect(() => {
@@ -466,6 +561,8 @@ const FrameSelectionScreen = () => {
     }
   };
 
+  const [message, setMessage] = useState('');
+
   return (
     <div className="flex flex-col items-center min-h-screen bg-gradient-to-br from-indigo-500 to-purple-700 text-white p-4">
       <MessageModal message={message} onClose={() => setMessage('')} />
@@ -491,7 +588,7 @@ const FrameSelectionScreen = () => {
             >
               <img
                 src={frame.imageUrl}
-                alt={frame.name}
+                alt={`Frame ${frame.id}`}
                 className="w-full h-48 object-cover rounded-t-lg"
                 onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/800x600/CCCCCC/000000?text=Gambar+Rusak"; }}
               />
@@ -502,7 +599,7 @@ const FrameSelectionScreen = () => {
               {selectedFrame && selectedFrame.id === frame.id && (
                 <div className="absolute top-2 right-2 bg-yellow-400 text-gray-800 rounded-full p-1">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                   </svg>
                 </div>
               )}
@@ -531,31 +628,16 @@ const PhotoSessionScreen = () => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const frameCanvasRef = useRef(null);
-  const [countdown, setCountdown] = useState(0); // 5, 4, 3, 2, 1, JEP-RET!
-  const [photoCount, setPhotoCount] = useState(0); // Jumlah foto yang sudah diambil
-  const [retakeIndex, setRetakeIndex] = useState(null); // Indeks foto yang akan diretake
+  const [countdown, setCountdown] = useState(0);
+  const [photoCount, setPhotoCount] = useState(0);
+  const [retakeIndex, setRetakeIndex] = useState(null);
   const [message, setMessage] = useState('');
   const [timeLeft, setTimeLeft] = useState(0);
+  const [isVideoReady, setIsVideoReady] = useState(false);
+  const [showFlash, setShowFlash] = useState(false);
+  const streamRef = useRef(null);
 
-  // Timer sesi
-  useEffect(() => {
-    let timer;
-    if (sessionActive && sessionEndTime) {
-      timer = setInterval(() => {
-        const remaining = sessionEndTime - Date.now();
-        if (remaining <= 0) {
-          clearInterval(timer);
-          setMessage("Waktu sesi habis. Silakan mulai sesi baru.");
-          resetSession();
-          setCurrentScreen('boarding'); // Kembali ke boarding screen
-        } else {
-          setTimeLeft(remaining);
-        }
-      }, 1000);
-    }
-    return () => clearInterval(timer);
-  }, [sessionActive, sessionEndTime, setCurrentScreen, resetSession]);
-
+  // Fungsi untuk memformat waktu
   const formatTime = (ms) => {
     const totalSeconds = Math.floor(ms / 1000);
     const minutes = Math.floor(totalSeconds / 60);
@@ -563,38 +645,22 @@ const PhotoSessionScreen = () => {
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
-
+  // Timer untuk countdown
   useEffect(() => {
-    const startWebcam = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } } });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          // Set canvas dimensions based on video stream
-          videoRef.current.onloadedmetadata = () => {
-            if (canvasRef.current) {
-              canvasRef.current.width = videoRef.current.videoWidth;
-              canvasRef.current.height = videoRef.current.videoHeight;
-            }
-          };
-        }
-      } catch (err) {
-        console.error("Error accessing webcam:", err);
-        setMessage("Tidak dapat mengakses kamera. Pastikan kamera terhubung dan diizinkan.");
-      }
-    };
-
-    startWebcam();
-
-    // Pastikan webcam dimatikan saat komponen di-unmount
-    return () => {
-      const videoElement = videoRef.current; // Copy ref value
-      if (videoElement && videoElement.srcObject) {
-        const tracks = videoElement.srcObject.getTracks();
-        tracks.forEach(track => track.stop());
-      }
-    };
-  }, []);
+    let timer;
+    if (countdown > 0) {
+      timer = setTimeout(() => {
+        setCountdown(countdown - 1);
+      }, 1000);
+    } else if (countdown === 0 && photoCount < selectedFrame?.slots.length && retakeIndex === null) {
+      // Ambil foto setelah countdown selesai
+      capturePhoto(photoCount);
+      // Tampilkan flash
+      setShowFlash(true);
+      setTimeout(() => setShowFlash(false), 300); // Flash selama 300ms
+    }
+    return () => clearTimeout(timer);
+  }, [countdown, photoCount, selectedFrame, retakeIndex]);
 
   // Memulai pengambilan foto
   useEffect(() => {
@@ -602,53 +668,23 @@ const PhotoSessionScreen = () => {
       return;
     }
 
-    const totalSlots = selectedFrame.slots.length;
-    const allPhotosTaken = capturedPhotos.length === totalSlots;
-
-    if (photoCount < totalSlots && countdown === 0 && retakeIndex === null) {
-      // Tunggu sebentar sebelum memulai hitung mundur pertama atau setelah retake
+    if (photoCount < selectedFrame.slots.length && countdown === 0 && retakeIndex === null) {
+      // Mulai countdown setelah delay awal
       const initialDelay = photoCount === 0 ? 1000 : 0;
       setTimeout(() => setCountdown(5), initialDelay);
-    } else if (countdown === 0 && allPhotosTaken && retakeIndex === null) {
-      // Semua foto sudah diambil, siap untuk konfirmasi
-      setMessage("Semua foto berhasil diambil! Silakan konfirmasi.");
     }
-  }, [photoCount, selectedFrame, countdown, retakeIndex, capturedPhotos.length]); // Tambahkan capturedPhotos.length sebagai dependency
+  }, [photoCount, selectedFrame, countdown, retakeIndex]);
 
-  // Logic hitung mundur
-  useEffect(() => {
-    if (countdown > 0) {
-      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
-      return () => clearTimeout(timer);
-    } else if (countdown === 0 && selectedFrame && (photoCount < selectedFrame.slots.length || retakeIndex !== null)) {
-      // Ambil atau retake foto setelah hitung mundur selesai
-      if (videoRef.current && videoRef.current.readyState === 4) { // Pastikan video siap
-        const indexToCapture = retakeIndex !== null ? retakeIndex : photoCount;
-        capturePhoto(indexToCapture);
-        setRetakeIndex(null); // Reset retake index setelah capture
-      } else {
-        console.warn("Video stream not ready for capture. Waiting...");
-        // Mungkin perlu delay atau coba lagi. Biarkan useEffect ini berjalan lagi.
-      }
-    }
-  }, [countdown, photoCount, selectedFrame, retakeIndex]); // Tambahkan capturePhoto sebagai dependency (meskipun ESLint warning, untuk fungsionalitas)
-
-  // Fungsi capturePhoto dipindahkan keluar dari useEffect agar tidak menimbulkan warning dependency
   const capturePhoto = (indexToUpdate) => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const context = canvas.getContext('2d');
 
-    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
-      console.error("Video has no dimensions or not ready, cannot capture.");
-      setMessage("Error kamera: Video tidak siap. Coba muat ulang halaman.");
+    // Pastikan video memiliki dimensi
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      console.error("Video has no dimensions, cannot capture.");
+      setMessage("Error kamera: Video tidak memiliki dimensi. Coba muat ulang halaman.");
       return;
-    }
-
-    // Set canvas dimensions if they weren't set on metadata load
-    if (canvas.width === 0 || canvas.height === 0) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
     }
 
     // Gambar frame video ke canvas
@@ -665,16 +701,15 @@ const PhotoSessionScreen = () => {
       return newPhotos;
     });
 
-    if (retakeIndex === null) { // Hanya tingkatkan photoCount jika bukan retake
-      setPhotoCount(prev => prev + 1);
+    if (retakeIndex === null) {
+      setPhotoCount(prev => prev + 1); // Tambah hitungan foto jika bukan retake
     }
 
-    // Setelah mengambil foto, set countdown lagi jika masih ada slot yang perlu diambil
-    if (retakeIndex === null && (photoCount + 1 < selectedFrame.slots.length)) {
+    // Setelah mengambil foto, set countdown lagi jika masih ada slot
+    if (retakeIndex === null && photoCount + 1 < selectedFrame.slots.length) {
       setTimeout(() => setCountdown(5), 1000); // Tunggu 1 detik sebelum hitung mundur berikutnya
     }
   };
-
 
   // Menggambar frame dan foto yang sudah diambil ke canvas preview kanan
   useEffect(() => {
@@ -694,7 +729,6 @@ const PhotoSessionScreen = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height); // Bersihkan canvas
       ctx.drawImage(frameImage, 0, 0, canvas.width, canvas.height);
 
-      // Gambar setiap foto yang diambil ke slot yang sesuai
       capturedPhotos.forEach((photoDataUrl, index) => {
         if (selectedFrame.slots[index]) {
           const photoImage = new Image();
@@ -709,13 +743,12 @@ const PhotoSessionScreen = () => {
             ctx.drawImage(photoImage, x, y, width, height);
 
             // Gambar ulang frame setelah foto untuk memastikan foto berada di bawah frame
-            ctx.drawImage(frameImage, 0, 0, canvas.width, canvas.height); // Redraw frame to overlay photos
+            ctx.drawImage(frameImage, 0, 0, canvas.width, canvas.height);
           };
         }
       });
     };
   }, [selectedFrame, capturedPhotos]);
-
 
   const handleConfirm = () => {
     if (capturedPhotos.length === selectedFrame.slots.length) {
@@ -733,11 +766,36 @@ const PhotoSessionScreen = () => {
 
   const isAllPhotosTaken = capturedPhotos.length === selectedFrame?.slots.length;
 
+  const releaseCamera = async () => {
+    try {
+      if (streamRef.current) {
+        const tracks = streamRef.current.getTracks();
+        tracks.forEach(track => {
+          track.stop();
+          console.log('Track stopped:', track.kind);
+        });
+        streamRef.current = null;
+      }
+      if (videoRef.current && videoRef.current.srcObject) {
+        videoRef.current.srcObject = null;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (err) {
+      console.error('Error releasing camera:', err);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      releaseCamera();
+    };
+  }, []);
+
   return (
-    <div className="flex flex-col items-center min-h-screen bg-gradient-to-br from-red-500 to-orange-700 text-white p-4">
+    <div className="fixed inset-0 flex flex-col items-center bg-gradient-to-br from-red-500 to-orange-700 text-white overflow-hidden">
       <MessageModal message={message} onClose={() => setMessage('')} />
 
-      <h1 className="text-4xl md:text-6xl font-extrabold mb-6 drop-shadow-lg text-center">
+      <h1 className="text-4xl md:text-6xl font-extrabold mb-6 drop-shadow-lg text-center mt-4">
         Sesi Foto! 📸
       </h1>
 
@@ -747,12 +805,13 @@ const PhotoSessionScreen = () => {
         </div>
       )}
 
-      <div className="flex flex-col md:flex-row gap-6 w-full max-w-7xl h-[60vh] mb-8">
+      <div className="flex flex-col md:flex-row gap-6 w-full max-w-7xl flex-1 p-4">
         {/* Kotak Kiri: Live Preview & Countdown */}
         <div className="relative flex-1 bg-gray-900 rounded-xl overflow-hidden shadow-2xl border-4 border-white flex items-center justify-center">
-          <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover transform scaleX(-1)"></video> {/* Mirror video */}
-          <canvas ref={canvasRef} className="hidden"></canvas> {/* Hidden canvas for capturing */}
+          <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover"></video>
+          <canvas ref={canvasRef} className="hidden"></canvas>
 
+          {/* Countdown Overlay */}
           {countdown > 0 && (
             <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-70">
               <span className="text-8xl md:text-9xl font-extrabold text-white animate-pulse">
@@ -760,12 +819,21 @@ const PhotoSessionScreen = () => {
               </span>
             </div>
           )}
-          {countdown === 0 && !isAllPhotosTaken && retakeIndex === null && (
+
+          {/* Flash Overlay */}
+          {showFlash && (
+            <div className="absolute inset-0 bg-white animate-flash"></div>
+          )}
+
+          {/* Jepret Text */}
+          {countdown === 0 && !isAllPhotosTaken && retakeIndex === null && !showFlash && (
             <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-90 animate-flash">
               <span className="text-6xl md:text-7xl font-extrabold text-gray-900">JEP-RET!</span>
             </div>
           )}
-          {retakeIndex !== null && countdown === 0 && (
+
+          {/* Retake Text */}
+          {retakeIndex !== null && countdown === 0 && !showFlash && (
             <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-90 animate-flash">
               <span className="text-6xl md:text-7xl font-extrabold text-gray-900">RETAKE!</span>
             </div>
@@ -798,14 +866,16 @@ const PhotoSessionScreen = () => {
         </div>
       </div>
 
-      <button
-        onClick={handleConfirm}
-        disabled={!isAllPhotosTaken || countdown > 0 || retakeIndex !== null}
-        className={`bg-green-500 hover:bg-green-600 text-white font-extrabold py-4 px-10 rounded-full shadow-lg text-2xl transition-all duration-300 transform hover:scale-105
-          ${!isAllPhotosTaken || countdown > 0 || retakeIndex !== null ? 'opacity-50 cursor-not-allowed' : ''}`}
-      >
-        Konfirmasi Foto ✅
-      </button>
+      <div className="mb-4">
+        <button
+          onClick={handleConfirm}
+          disabled={!isAllPhotosTaken || countdown > 0 || retakeIndex !== null}
+          className={`bg-green-500 hover:bg-green-600 text-white font-extrabold py-4 px-10 rounded-full shadow-lg text-2xl transition-all duration-300 transform hover:scale-105
+            ${!isAllPhotosTaken || countdown > 0 || retakeIndex !== null ? 'opacity-50 cursor-not-allowed' : ''}`}
+        >
+          Konfirmasi Foto ✅
+        </button>
+      </div>
     </div>
   );
 };
@@ -860,7 +930,6 @@ const FinalPreviewScreen = () => {
     const generateFinalOutputs = async () => {
       // 1. Generate Foto Fix dalam Frame
       const canvas = finalCanvasRef.current;
-      if (!canvas) return; // Pastikan canvas ada
       const ctx = canvas.getContext('2d');
       const frameImage = new Image();
       frameImage.src = selectedFrame.imageUrl;
@@ -871,7 +940,6 @@ const FinalPreviewScreen = () => {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(frameImage, 0, 0, canvas.width, canvas.height);
 
-        let loadedImages = 0;
         capturedPhotos.forEach((photoDataUrl, index) => {
           if (selectedFrame.slots[index]) {
             const photoImage = new Image();
@@ -884,15 +952,12 @@ const FinalPreviewScreen = () => {
               const height = (slot.height / 100) * canvas.height;
               ctx.drawImage(photoImage, x, y, width, height);
 
-              loadedImages++;
-              if (loadedImages === capturedPhotos.length) {
-                // Gambar ulang frame setelah semua foto dimuat untuk memastikan foto berada di bawah frame
-                ctx.drawImage(frameImage, 0, 0, canvas.width, canvas.height);
-                setFramedPhotoUrl(canvas.toDataURL('image/png'));
-              }
+              // Gambar ulang frame setelah foto untuk memastikan foto berada di bawah frame
+              ctx.drawImage(frameImage, 0, 0, canvas.width, canvas.height);
             };
           }
         });
+        setFramedPhotoUrl(canvas.toDataURL('image/png'));
       };
 
       // 2. Generate Foto Polosan (ambil foto pertama atau gabungkan)
@@ -909,30 +974,17 @@ const FinalPreviewScreen = () => {
       // gif.render();
 
       // Placeholder GIF:
-      // Untuk tujuan demo ini, kita akan membuat animasi sederhana dari gambar-gambar yang diambil
-      // Anda perlu library GIF sungguhan untuk ini, seperti 'gif.js'
       const placeholderGif = await createPlaceholderGif(capturedPhotos);
       setLivePhotoUrl(placeholderGif);
-      if (gifPreviewRef.current) {
-        gifPreviewRef.current.src = placeholderGif; // Tampilkan di elemen <img>
-      }
+      gifPreviewRef.current.src = placeholderGif; // Tampilkan di elemen <img>
 
       // 4. QR Code ke Cloud (Simulasi)
       // Link akan mengarah ke blob URL dari hasil foto yang sudah diframe
+      const finalBlob = await new Promise(resolve => finalCanvasRef.current.toBlob(resolve, 'image/png'));
+      const finalBlobUrl = URL.createObjectURL(finalBlob);
       // Di aplikasi nyata, Anda akan mengunggah ini ke Google Drive/Cloudinary dan mendapatkan URL publik
       // Untuk demo ini, QR code akan menunjuk ke blob URL ini.
-      const finalBlob = await new Promise(resolve => {
-        if (finalCanvasRef.current) {
-          finalCanvasRef.current.toBlob(resolve, 'image/png');
-        } else {
-          resolve(null);
-        }
-      });
-      if (finalBlob) {
-        const finalBlobUrl = URL.createObjectURL(finalBlob);
-        generateQRCode(finalBlobUrl);
-      }
-
+      generateQRCode(finalBlobUrl);
 
       // Cek status cetak dari Firestore
       if (db && userId) {
@@ -951,8 +1003,7 @@ const FinalPreviewScreen = () => {
     };
 
     generateFinalOutputs();
-  }, [capturedPhotos, selectedFrame, db, userId, appId, setPrintCount]); // Tambahkan setPrintCount ke dependency array
-
+  }, [capturedPhotos, selectedFrame, db, userId]);
 
   // Fungsi untuk membuat placeholder GIF sederhana dari array gambar
   const createPlaceholderGif = async (images) => {
@@ -962,20 +1013,42 @@ const FinalPreviewScreen = () => {
     // Untuk tujuan demo, ini akan membuat animasi sederhana di canvas atau mengambil gambar pertama
     // Jika Anda ingin implementasi GIF yang lebih realistis, Anda perlu mengimpor library GIF
     // yang kompatibel dengan browser, seperti `gif.js` atau `jsgif`.
-    // Untuk demo ini, saya akan kembalikan gambar pertama dan menjelaskan bahwa GIF memerlukan library.
-    // Jika Anda memiliki beberapa gambar, Anda dapat mengimplementasikan logika GIF di sini
-    // menggunakan canvas untuk menggambar frame secara berurutan dan mengambil data URL.
+    // Contoh sederhana:
+
     if (images.length === 0) return '';
 
-    // Simulate a simple animation by quickly cycling through images
-    // Note: This is NOT a real GIF, just a visual simulation.
-    return images[0] || ''; // Mengembalikan gambar pertama sebagai fallback visual
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // Tentukan ukuran canvas berdasarkan gambar pertama atau ukuran frame
+    const img = new Image();
+    img.src = images[0];
+    await new Promise(resolve => img.onload = resolve);
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    // Untuk simulasi "Live Photo", kita akan buat GIF kecil yang melingkar
+    // Kita bisa gambar setiap foto ke canvas dan ambil frame-nya
+    let frames = [];
+    for (let i = 0; i < images.length; i++) {
+      const currentImg = new Image();
+      currentImg.src = images[i];
+      await new Promise(resolve => currentImg.onload = resolve);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(currentImg, 0, 0, canvas.width, canvas.height);
+      frames.push(canvas.toDataURL('image/png'));
+    }
+
+    // Ini adalah representasi sangat sederhana dan bukan GIF sebenarnya.
+    // Browser akan menampilkan gambar pertama, atau Anda bisa membuat GIF dari ini
+    // dengan library yang sebenarnya.
+    // Untuk demo ini, saya akan kembalikan gambar pertama sebagai fallback
+    return images[0] || ''; // Mengembalikan gambar pertama sebagai fallback
   };
 
 
   const generateQRCode = async (dataUrl) => {
     try {
-      // Menggunakan API QR Server. Ini adalah layanan eksternal.
       const response = await fetch('https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + encodeURIComponent(dataUrl));
       if (response.ok) {
         const blob = await response.blob();
@@ -999,7 +1072,6 @@ const FinalPreviewScreen = () => {
     // Simulasi proses cetak
     setMessage("Mencetak foto Anda... Mohon tunggu.");
     // Di aplikasi nyata, ini akan mengirim perintah cetak ke mesin cetak lokal
-    // Misalnya, dengan WebUSB, Electron, atau aplikasi server cetak
     console.log("Mencetak foto:", framedPhotoUrl);
 
     // Update print count di Firestore
@@ -1137,7 +1209,7 @@ const FinalPreviewScreen = () => {
       {/* Email Modal */}
       {showEmailModal && (
         <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
-          <div className="bg-white p-8 rounded-xl shadow-2xl max-w-md w-full text-gray-800 text-center rounded-2xl">
+          <div className="bg-white p-8 rounded-xl shadow-2xl max-w-md w-full text-gray-800 text-center">
             <h2 className="text-2xl font-bold mb-4">Kirim Foto ke Email</h2>
             <p className="mb-4">Masukkan alamat email tujuan:</p>
             <input
@@ -1150,13 +1222,13 @@ const FinalPreviewScreen = () => {
             <div className="flex gap-4 justify-center">
               <button
                 onClick={handleSendEmail}
-                className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-5 rounded-md transition duration-300 rounded-lg shadow-md"
+                className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-5 rounded-md transition duration-300"
               >
                 Kirim
               </button>
               <button
                 onClick={() => setShowEmailModal(false)}
-                className="bg-gray-400 hover:bg-gray-500 text-gray-800 font-bold py-2 px-5 rounded-md transition duration-300 rounded-lg shadow-md"
+                className="bg-gray-400 hover:bg-gray-500 text-gray-800 font-bold py-2 px-5 rounded-md transition duration-300"
               >
                 Batal
               </button>
@@ -1168,67 +1240,46 @@ const FinalPreviewScreen = () => {
   );
 };
 
+// Tambahkan SuccessScreen
+const SuccessScreen = () => {
+  const { setCurrentScreen } = useContext(AppContext);
+  
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-red-500 to-orange-700 text-white p-4">
+      <div className="text-center">
+        <h1 className="text-4xl md:text-6xl font-extrabold mb-6 drop-shadow-lg">
+          Foto Berhasil Disimpan! 🎉
+        </h1>
+        <p className="text-xl md:text-2xl mb-8">
+          Foto Anda telah berhasil disimpan dan dapat diakses di galeri.
+        </p>
+        <button
+          onClick={() => setCurrentScreen('boarding')}
+          className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-8 rounded-full text-xl shadow-lg transition-all duration-300 transform hover:scale-105"
+        >
+          Kembali ke Awal
+        </button>
+      </div>
+    </div>
+  );
+};
 
 // Main App Component
 function App() {
   const { currentScreen } = useContext(AppContext);
 
-  // Note: For local deployment, it's generally better to include the Tailwind CSS CDN
-  // script directly in your public/index.html file's <head> section,
-  // to ensure it loads before your React app.
-  // Example: <script src="https://cdn.tailwindcss.com"></script>
-  // This approach is for self-contained immersive code.
-
   return (
-    <>
-      {/* Script Tailwind CSS CDN - Harap pindahkan ini ke public/index.html untuk deployment lokal */}
-      <script src="https://cdn.tailwindcss.com"></script>
-      <style>
-        {`
-        /* Pastikan HTML dan Body mengisi seluruh viewport */
-        html, body {
-          height: 100%;
-          margin: 0;
-          padding: 0;
-        }
-
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
-        body {
-          font-family: 'Inter', sans-serif;
-          overflow: hidden; /* Hide scrollbars if content overflows during transitions */
-        }
-        .animate-bounce {
-          animation: bounce 1s infinite;
-        }
-        @keyframes bounce {
-          0%, 100% {
-            transform: translateY(-25%);
-            animation-timing-function: cubic-bezier(0.8, 0, 1, 1);
-          }
-          50% {
-            transform: none;
-            animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
-          }
-        }
-        .animate-flash {
-          animation: flash 0.3s forwards;
-        }
-        @keyframes flash {
-          0% { opacity: 0; }
-          50% { opacity: 1; }
-          100% { opacity: 0; }
-        }
-        `}
-      </style>
-      <div className="min-h-screen flex items-center justify-center">
-        {currentScreen === 'boarding' && <BoardingScreen />}
-        {currentScreen === 'tutorial' && <TutorialScreen />}
-        {currentScreen === 'menu' && <MenuScreen />}
-        {currentScreen === 'frameSelection' && <FrameSelectionScreen />}
-        {currentScreen === 'photoSession' && <PhotoSessionScreen />}
-        {currentScreen === 'finalPreview' && <FinalPreviewScreen />}
-      </div>
-    </>
+    <div className="min-h-screen bg-gradient-to-br from-red-500 to-orange-700">
+      {currentScreen === 'boarding' && <BoardingScreen />}
+      {currentScreen === 'frameSelection' && <FrameSelectionScreen />}
+      {currentScreen === 'photoSession' && <PhotoSessionScreen />}
+      {currentScreen === 'finalPreview' && <FinalPreviewScreen />}
+      {/* PaymentScreen dinonaktifkan sementara
+      {currentScreen === 'payment' && <PaymentScreen />}
+      */}
+      {currentScreen === 'payment' && <BoardingScreen />}
+      {currentScreen === 'success' && <SuccessScreen />}
+    </div>
   );
 }
 
