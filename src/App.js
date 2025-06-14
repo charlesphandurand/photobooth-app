@@ -203,9 +203,11 @@ const BoardingScreen = () => {
   const [cameraLoading, setCameraLoading] = useState(true);
   const [cameraError, setCameraError] = useState(false);
   const [message, setMessage] = useState('');
-  const [retryCount, setRetryCount] = useState(0);
-  const maxRetries = 3;
   const streamRef = useRef(null);
+  const retryTimeoutRef = useRef(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 2000; // 2 detik
 
   const releaseCamera = async () => {
     try {
@@ -217,10 +219,13 @@ const BoardingScreen = () => {
         });
         streamRef.current = null;
       }
-      if (videoRef.current && videoRef.current.srcObject) {
+
+      if (videoRef.current) {
         videoRef.current.srcObject = null;
+        videoRef.current.load(); // Force video element to reset
       }
-      // Tunggu sebentar untuk memastikan kamera benar-benar dilepas
+
+      // Tunggu lebih lama untuk memastikan kamera benar-benar dilepas
       await new Promise(resolve => setTimeout(resolve, 1000));
     } catch (err) {
       console.error('Error releasing camera:', err);
@@ -228,106 +233,109 @@ const BoardingScreen = () => {
   };
 
   const startWebcam = async () => {
-    setCameraLoading(true);
-    setCameraError(false);
     try {
+      setCameraLoading(true);
+      setCameraError(false);
+
       // Pastikan kamera dilepas terlebih dahulu
       await releaseCamera();
 
-      // Coba akses kamera dengan berbagai konfigurasi
-      const constraints = [
-        {
-          video: { 
-            width: { ideal: 1280 }, 
-            height: { ideal: 720 },
-            facingMode: 'user'
-          }
-        },
-        {
-          video: { 
-            width: { ideal: 640 }, 
-            height: { ideal: 480 },
-            facingMode: 'user'
-          }
-        },
-        { video: true }
-      ];
+      // Reset retry count if this is a fresh start
+      if (retryCount >= MAX_RETRIES) {
+        setRetryCount(0);
+      }
 
-      let stream = null;
-      let error = null;
-
-      for (const constraint of constraints) {
-        try {
-          // Coba dapatkan stream dengan timeout
-          const streamPromise = navigator.mediaDevices.getUserMedia(constraint);
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout')), 5000)
-          );
-          
-          stream = await Promise.race([streamPromise, timeoutPromise]);
-          
-          if (stream) {
-            console.log('Berhasil mendapatkan stream dengan constraint:', constraint);
-            streamRef.current = stream;
-            break;
-          }
-        } catch (err) {
-          error = err;
-          console.log('Gagal dengan constraint:', constraint, err);
-          if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-          }
-          continue;
+      // Coba akses kamera dengan konfigurasi yang lebih stabil
+      const constraints = {
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: 'user',
+          frameRate: { ideal: 30 }
         }
-      }
+      };
 
-      if (!stream) {
-        throw error || new Error('Tidak dapat mengakses kamera dengan konfigurasi apapun');
-      }
-
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      streamRef.current = stream;
+      
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.onloadeddata = () => {
-          setCameraLoading(false);
-        };
-        // Fallback jika onloadeddata tidak terpanggil
-        setTimeout(() => {
-          if (videoRef.current.readyState === 4 && cameraLoading) {
-            setCameraLoading(false);
-          }
-        }, 3000);
+        
+        // Tunggu video siap dengan timeout
+        await new Promise((resolve, reject) => {
+          const timeoutId = setTimeout(() => {
+            reject(new Error('Timeout waiting for video to be ready'));
+          }, 5000);
+
+          videoRef.current.onloadedmetadata = () => {
+            clearTimeout(timeoutId);
+            if (videoRef.current) {
+              videoRef.current.play()
+                .then(() => {
+                  setCameraLoading(false);
+                  setRetryCount(0);
+                  console.log('Video started playing');
+                  resolve();
+                })
+                .catch(err => {
+                  console.error('Error playing video:', err);
+                  reject(err);
+                });
+            } else {
+              reject(new Error('Video element is null'));
+            }
+          };
+
+          videoRef.current.onerror = (err) => {
+            clearTimeout(timeoutId);
+            console.error('Video error:', err);
+            reject(err);
+          };
+        });
+      } else {
+        throw new Error('Video element not found');
       }
     } catch (err) {
       console.error("Error mengakses webcam:", err);
-      setCameraError(true);
-      setCameraLoading(false);
-      
-      let errorMessage = 'Tidak dapat mengakses kamera: ';
-      switch(err.name) {
-        case 'NotAllowedError':
-          errorMessage += 'Izin kamera ditolak. Klik ikon kamera di address bar untuk mengizinkan.';
-          break;
-        case 'NotFoundError':
-          errorMessage += 'Kamera tidak ditemukan. Pastikan kamera terhubung.';
-          break;
-        case 'NotReadableError':
-          errorMessage += 'Kamera sedang digunakan. Silakan tutup aplikasi lain yang menggunakan kamera dan refresh halaman.';
-          break;
-        case 'Timeout':
-          errorMessage += 'Waktu akses kamera habis. Silakan refresh halaman.';
-          break;
-        default:
-          errorMessage += err.message;
-      }
-      setMessage(errorMessage);
+      handleCameraError(err);
+    }
+  };
 
-      // Coba ulang jika belum mencapai batas maksimum
-      if (retryCount < maxRetries) {
-        setRetryCount(prev => prev + 1);
-        setTimeout(() => {
-          startWebcam();
-        }, 2000);
-      }
+  const handleCameraError = async (err) => {
+    setCameraError(true);
+    setCameraLoading(false);
+    
+    let errorMessage = 'Tidak dapat mengakses kamera: ';
+    switch(err.name) {
+      case 'NotAllowedError':
+        errorMessage += 'Izin kamera ditolak. Klik ikon kamera di address bar untuk mengizinkan.';
+        break;
+      case 'NotFoundError':
+        errorMessage += 'Kamera tidak ditemukan. Pastikan kamera terhubung.';
+        break;
+      case 'NotReadableError':
+        errorMessage += 'Kamera sedang digunakan. Silakan:\n1. Tutup semua aplikasi yang menggunakan kamera\n2. Refresh halaman ini\n3. Jika masih bermasalah, restart browser';
+        break;
+      case 'Timeout':
+        errorMessage += 'Waktu tunggu kamera habis. Silakan refresh halaman.';
+        break;
+      default:
+        errorMessage += err.message;
+    }
+    setMessage(errorMessage);
+
+    // Coba lepaskan kamera
+    await releaseCamera();
+
+    // Retry logic dengan delay yang lebih lama
+    if (retryCount < MAX_RETRIES) {
+      setRetryCount(prev => prev + 1);
+      retryTimeoutRef.current = setTimeout(() => {
+        console.log(`Retrying camera access (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+        startWebcam();
+      }, RETRY_DELAY * (retryCount + 1));
+    } else {
+      setMessage('Gagal mengakses kamera setelah beberapa percobaan. Silakan refresh halaman.');
     }
   };
 
@@ -351,6 +359,7 @@ const BoardingScreen = () => {
             playsInline
             muted
             className="w-full h-full object-cover"
+            style={{ transform: 'scaleX(-1)' }} // Mirror video
           />
           {cameraLoading && (
             <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
@@ -386,142 +395,11 @@ const BoardingScreen = () => {
   );
 };
 
-// 2. Tutorial Screen
-const TutorialScreen = () => {
-  const { setCurrentScreen } = useContext(AppContext);
-
-  return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-green-400 to-teal-600 text-white p-4 text-center">
-      <h1 className="text-4xl md:text-6xl font-extrabold mb-8 drop-shadow-lg">
-        Cara Menggunakan Photobooth 🎉
-      </h1>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12 max-w-5xl w-full">
-        <div className="bg-white bg-opacity-20 p-6 rounded-xl shadow-lg flex flex-col items-center transform hover:scale-105 transition-transform duration-300">
-          <span className="text-6xl mb-4">👆</span>
-          <h2 className="text-2xl font-bold mb-2">Pilih Frame</h2>
-          <p className="text-lg">Sesuaikan gayamu dengan berbagai pilihan frame menarik.</p>
-        </div>
-        <div className="bg-white bg-opacity-20 p-6 rounded-xl shadow-lg flex flex-col items-center transform hover:scale-105 transition-transform duration-300">
-          <span className="text-6xl mb-4">📸</span>
-          <h2 className="text-2xl font-bold mb-2">Ambil Foto</h2>
-          <p className="text-lg">Siap-siap berpose! Ada hitung mundur sebelum setiap jepretan.</p>
-        </div>
-        <div className="bg-white bg-opacity-20 p-6 rounded-xl shadow-lg flex flex-col items-center transform hover:scale-105 transition-transform duration-300">
-          <span className="text-6xl mb-4">🖨️</span>
-          <h2 className="text-2xl font-bold mb-2">Cetak & Bagikan</h2>
-          <p className="text-lg">Dapatkan hasil cetak dan kirimkan ke emailmu atau via QR Code!</p>
-        </div>
-      </div>
-      <button
-        onClick={() => setCurrentScreen('menu')}
-        className="bg-yellow-400 hover:bg-yellow-500 text-gray-900 font-extrabold py-4 px-8 rounded-full shadow-lg text-2xl transition-all duration-300 transform hover:scale-110"
-      >
-        Lanjut ke Menu
-      </button>
-    </div>
-  );
-};
-
-// 3. Menu/Payment Screen
-const MenuScreen = () => {
-  const { setCurrentScreen, setSessionActive, setSessionEndTime, resetSession } = useContext(AppContext);
-  const [voucherCode, setVoucherCode] = useState('');
-  const [message, setMessage] = useState('');
-  const [showPaymentOptions, setShowPaymentOptions] = useState(false);
-
-  const handleVoucherApply = () => {
-    // Simulasi validasi voucher
-    if (voucherCode === 'GRATISFOTO') {
-      setMessage("Voucher berhasil diterapkan! Sesi akan dimulai.");
-      startSession();
-    } else {
-      setMessage("Voucher tidak valid. Silakan coba lagi atau lanjutkan dengan pembayaran.");
-    }
-  };
-
-  const startSession = () => {
-    const sessionDuration = 5 * 60 * 1000; // 5 menit dalam milidetik
-    setSessionEndTime(Date.now() + sessionDuration);
-    setSessionActive(true);
-    setCurrentScreen('frameSelection'); // Langsung ke pemilihan frame setelah pembayaran/voucher
-  };
-
-  const handlePayment = () => {
-    // Simulasi pembayaran dengan Xendit. Di aplikasi nyata, ini akan mengarahkan ke gateway Xendit.
-    setMessage("Pembayaran sukses! Sesi akan dimulai.");
-    startSession();
-  };
-
-  return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-blue-500 to-indigo-700 text-white p-4 text-center">
-      <MessageModal message={message} onClose={() => setMessage('')} />
-      <h1 className="text-4xl md:text-6xl font-extrabold mb-8 drop-shadow-lg">
-        Pilih Mode Foto Anda 
-      </h1>
-
-      <div className="flex flex-col md:flex-row gap-6 mb-12 w-full max-w-4xl">
-        <button
-          onClick={() => setShowPaymentOptions(true)}
-          className="flex-1 bg-purple-500 hover:bg-purple-600 text-white font-extrabold py-5 px-8 rounded-xl shadow-lg text-3xl transition-all duration-300 transform hover:scale-105"
-        >
-          📸 Mode Foto Biasa
-        </button>
-        <button
-          className="flex-1 bg-gray-400 text-gray-800 font-extrabold py-5 px-8 rounded-xl shadow-lg text-3xl cursor-not-allowed opacity-70"
-          disabled
-        >
-          Pilihan Akan Datang (Segera!) ✨
-        </button>
-      </div>
-
-      {showPaymentOptions && (
-        <div className="bg-white p-8 rounded-xl shadow-2xl max-w-2xl w-full text-gray-800">
-          <h2 className="text-3xl font-bold mb-6 text-center text-indigo-700">Lanjutkan Pembayaran atau Voucher</h2>
-
-          <div className="mb-6">
-            <input
-              type="text"
-              placeholder="Masukkan Kode Voucher"
-              value={voucherCode}
-              onChange={(e) => setVoucherCode(e.target.value)}
-              className="w-full p-4 rounded-lg border-2 border-gray-300 focus:ring-2 focus:ring-blue-500 text-lg"
-            />
-            <button
-              onClick={handleVoucherApply}
-              className="mt-4 w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-lg text-xl transition duration-300 shadow-md"
-            >
-              Gunakan Voucher
-            </button>
-          </div>
-
-          <div className="relative flex items-center justify-center my-8">
-            <div className="absolute border-t-2 border-gray-300 w-full"></div>
-            <span className="relative bg-white px-4 text-gray-500 text-lg font-semibold">ATAU</span>
-          </div>
-
-          <button
-            onClick={handlePayment}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-4 rounded-xl text-2xl transition duration-300 shadow-lg flex items-center justify-center"
-          >
-            Bayar dengan Xendit 💳
-          </button>
-
-          <button
-            onClick={() => { resetSession(); setCurrentScreen('boarding'); }}
-            className="mt-6 w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3 rounded-xl text-lg transition duration-300"
-          >
-            Batal & Kembali
-          </button>
-        </div>
-      )}
-    </div>
-  );
-};
-
 // 4. Frame Selection Screen
 const FrameSelectionScreen = () => {
   const { setCurrentScreen, frames, selectedFrame, setSelectedFrame, sessionEndTime, sessionActive, resetSession } = useContext(AppContext);
   const [timeLeft, setTimeLeft] = useState(0);
+  const [message, setMessage] = useState('');
 
   // Timer sesi
   useEffect(() => {
@@ -533,7 +411,7 @@ const FrameSelectionScreen = () => {
           clearInterval(timer);
           setMessage("Waktu sesi habis. Silakan mulai sesi baru.");
           resetSession();
-          setCurrentScreen('boarding'); // Kembali ke boarding screen
+          setCurrentScreen('boarding');
         } else {
           setTimeLeft(remaining);
         }
@@ -561,8 +439,6 @@ const FrameSelectionScreen = () => {
     }
   };
 
-  const [message, setMessage] = useState('');
-
   return (
     <div className="flex flex-col items-center min-h-screen bg-gradient-to-br from-indigo-500 to-purple-700 text-white p-4">
       <MessageModal message={message} onClose={() => setMessage('')} />
@@ -588,7 +464,7 @@ const FrameSelectionScreen = () => {
             >
               <img
                 src={frame.imageUrl}
-                alt={`Frame ${frame.id}`}
+                alt={frame.name}
                 className="w-full h-48 object-cover rounded-t-lg"
                 onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/800x600/CCCCCC/000000?text=Gambar+Rusak"; }}
               />
@@ -599,7 +475,7 @@ const FrameSelectionScreen = () => {
               {selectedFrame && selectedFrame.id === frame.id && (
                 <div className="absolute top-2 right-2 bg-yellow-400 text-gray-800 rounded-full p-1">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                   </svg>
                 </div>
               )}
@@ -624,20 +500,24 @@ const FrameSelectionScreen = () => {
 
 // 5. Photo Session Screen
 const PhotoSessionScreen = () => {
-  const { setCurrentScreen, selectedFrame, setCapturedPhotos, capturedPhotos, sessionEndTime, sessionActive, resetSession } = useContext(AppContext);
+  const { setCurrentScreen, selectedFrame, setCapturedPhotos, capturedPhotos, sessionEndTime, sessionActive } = useContext(AppContext);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const frameCanvasRef = useRef(null);
-  const [countdown, setCountdown] = useState(0);
+  const [cameraLoading, setCameraLoading] = useState(true);
+  const [cameraError, setCameraError] = useState(false);
+  const [message, setMessage] = useState('');
+  const [countdown, setCountdown] = useState(null);
   const [photoCount, setPhotoCount] = useState(0);
   const [retakeIndex, setRetakeIndex] = useState(null);
-  const [message, setMessage] = useState('');
-  const [timeLeft, setTimeLeft] = useState(0);
-  const [isVideoReady, setIsVideoReady] = useState(false);
   const [showFlash, setShowFlash] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(0);
   const streamRef = useRef(null);
+  const retryTimeoutRef = useRef(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 2000;
 
-  // Fungsi untuk memformat waktu
   const formatTime = (ms) => {
     const totalSeconds = Math.floor(ms / 1000);
     const minutes = Math.floor(totalSeconds / 60);
@@ -645,129 +525,26 @@ const PhotoSessionScreen = () => {
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
-  // Timer untuk countdown
-  useEffect(() => {
-    let timer;
-    if (countdown > 0) {
-      timer = setTimeout(() => {
-        setCountdown(countdown - 1);
-      }, 1000);
-    } else if (countdown === 0 && photoCount < selectedFrame?.slots.length && retakeIndex === null) {
-      // Ambil foto setelah countdown selesai
-      capturePhoto(photoCount);
-      // Tampilkan flash
-      setShowFlash(true);
-      setTimeout(() => setShowFlash(false), 300); // Flash selama 300ms
-    }
-    return () => clearTimeout(timer);
-  }, [countdown, photoCount, selectedFrame, retakeIndex]);
-
-  // Memulai pengambilan foto
-  useEffect(() => {
-    if (!selectedFrame || !videoRef.current || !videoRef.current.srcObject) {
-      return;
-    }
-
-    if (photoCount < selectedFrame.slots.length && countdown === 0 && retakeIndex === null) {
-      // Mulai countdown setelah delay awal
-      const initialDelay = photoCount === 0 ? 1000 : 0;
-      setTimeout(() => setCountdown(5), initialDelay);
-    }
-  }, [photoCount, selectedFrame, countdown, retakeIndex]);
-
-  const capturePhoto = (indexToUpdate) => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const context = canvas.getContext('2d');
-
-    // Pastikan video memiliki dimensi
-    if (video.videoWidth === 0 || video.videoHeight === 0) {
-      console.error("Video has no dimensions, cannot capture.");
-      setMessage("Error kamera: Video tidak memiliki dimensi. Coba muat ulang halaman.");
-      return;
-    }
-
-    // Gambar frame video ke canvas
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const photoDataUrl = canvas.toDataURL('image/png');
-
-    setCapturedPhotos(prevPhotos => {
-      const newPhotos = [...prevPhotos];
-      if (indexToUpdate < newPhotos.length) {
-        newPhotos[indexToUpdate] = photoDataUrl; // Update foto yang diretake
-      } else {
-        newPhotos.push(photoDataUrl); // Tambahkan foto baru
-      }
-      return newPhotos;
-    });
-
-    if (retakeIndex === null) {
-      setPhotoCount(prev => prev + 1); // Tambah hitungan foto jika bukan retake
-    }
-
-    // Setelah mengambil foto, set countdown lagi jika masih ada slot
-    if (retakeIndex === null && photoCount + 1 < selectedFrame.slots.length) {
-      setTimeout(() => setCountdown(5), 1000); // Tunggu 1 detik sebelum hitung mundur berikutnya
-    }
-  };
-
-  // Menggambar frame dan foto yang sudah diambil ke canvas preview kanan
-  useEffect(() => {
-    if (!selectedFrame || !frameCanvasRef.current) return;
-
-    const canvas = frameCanvasRef.current;
-    const ctx = canvas.getContext('2d');
-    const frameImage = new Image();
-    frameImage.src = selectedFrame.imageUrl;
-
-    frameImage.onload = () => {
-      // Pastikan canvas memiliki ukuran yang sesuai dengan frame
-      canvas.width = frameImage.width;
-      canvas.height = frameImage.height;
-
-      // Gambar frame terlebih dahulu
-      ctx.clearRect(0, 0, canvas.width, canvas.height); // Bersihkan canvas
-      ctx.drawImage(frameImage, 0, 0, canvas.width, canvas.height);
-
-      capturedPhotos.forEach((photoDataUrl, index) => {
-        if (selectedFrame.slots[index]) {
-          const photoImage = new Image();
-          photoImage.src = photoDataUrl;
-          photoImage.onload = () => {
-            const slot = selectedFrame.slots[index];
-            // Konversi persentase ke piksel
-            const x = (slot.x / 100) * canvas.width;
-            const y = (slot.y / 100) * canvas.height;
-            const width = (slot.width / 100) * canvas.width;
-            const height = (slot.height / 100) * canvas.height;
-            ctx.drawImage(photoImage, x, y, width, height);
-
-            // Gambar ulang frame setelah foto untuk memastikan foto berada di bawah frame
-            ctx.drawImage(frameImage, 0, 0, canvas.width, canvas.height);
-          };
-        }
-      });
-    };
-  }, [selectedFrame, capturedPhotos]);
-
-  const handleConfirm = () => {
-    if (capturedPhotos.length === selectedFrame.slots.length) {
-      setCurrentScreen('finalPreview');
-    } else {
-      setMessage(`Anda harus mengambil ${selectedFrame.slots.length} foto sebelum konfirmasi.`);
-    }
-  };
+  const isAllPhotosTaken = photoCount >= selectedFrame?.slots?.length;
 
   const handleRetake = (index) => {
     setRetakeIndex(index);
-    setCountdown(5); // Mulai hitung mundur untuk retake
-    setMessage(`Mengulang foto ke-${index + 1}.`);
+    setCountdown(5);
   };
 
-  const isAllPhotosTaken = capturedPhotos.length === selectedFrame?.slots.length;
+  const handleConfirm = () => {
+    if (isAllPhotosTaken) {
+      setCurrentScreen('finalPreview');
+    }
+  };
 
   const releaseCamera = async () => {
     try {
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
+
       if (streamRef.current) {
         const tracks = streamRef.current.getTracks();
         tracks.forEach(track => {
@@ -776,20 +553,166 @@ const PhotoSessionScreen = () => {
         });
         streamRef.current = null;
       }
-      if (videoRef.current && videoRef.current.srcObject) {
+
+      if (videoRef.current) {
         videoRef.current.srcObject = null;
+        videoRef.current.load();
       }
+
       await new Promise(resolve => setTimeout(resolve, 1000));
     } catch (err) {
       console.error('Error releasing camera:', err);
     }
   };
 
+  const startWebcam = useCallback(async () => {
+    try {
+      setCameraLoading(true);
+      setCameraError(false);
+
+      if (retryCount >= MAX_RETRIES) {
+        setRetryCount(0);
+      }
+
+      await releaseCamera();
+
+      const constraints = {
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: 'user',
+          frameRate: { ideal: 30 }
+        }
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      streamRef.current = stream;
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        
+        await new Promise((resolve, reject) => {
+          const timeoutId = setTimeout(() => {
+            reject(new Error('Timeout waiting for video to be ready'));
+          }, 5000);
+
+          videoRef.current.onloadedmetadata = () => {
+            clearTimeout(timeoutId);
+            if (videoRef.current) {
+              videoRef.current.play()
+                .then(() => {
+                  setCameraLoading(false);
+                  setRetryCount(0);
+                  console.log('Video started playing');
+                  resolve();
+                })
+                .catch(err => {
+                  console.error('Error playing video:', err);
+                  reject(err);
+                });
+            } else {
+              reject(new Error('Video element is null'));
+            }
+          };
+
+          videoRef.current.onerror = (err) => {
+            clearTimeout(timeoutId);
+            console.error('Video error:', err);
+            reject(err);
+          };
+        });
+      } else {
+        throw new Error('Video element not found');
+      }
+    } catch (err) {
+      console.error("Error mengakses webcam:", err);
+      handleCameraError(err);
+    }
+  }, [retryCount]);
+
+  const handleCameraError = async (err) => {
+    setCameraError(true);
+    setCameraLoading(false);
+    setMessage('Gagal mengakses kamera. Silakan refresh halaman.');
+    await releaseCamera();
+
+    if (retryCount < MAX_RETRIES) {
+      setRetryCount(prev => prev + 1);
+      retryTimeoutRef.current = setTimeout(() => {
+        console.log(`Retrying camera access (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+        startWebcam();
+      }, RETRY_DELAY * (retryCount + 1));
+    }
+  };
+
+  // Timer sesi
   useEffect(() => {
+    let timer;
+    if (sessionActive && sessionEndTime) {
+      timer = setInterval(() => {
+        const remaining = sessionEndTime - Date.now();
+        if (remaining <= 0) {
+          clearInterval(timer);
+          setMessage("Waktu sesi habis. Silakan mulai sesi baru.");
+          setCurrentScreen('boarding');
+        } else {
+          setTimeLeft(remaining);
+        }
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [sessionActive, sessionEndTime, setCurrentScreen]);
+
+  useEffect(() => {
+    startWebcam();
     return () => {
       releaseCamera();
     };
-  }, []);
+  }, [startWebcam]);
+
+  const capturePhoto = useCallback(() => {
+    if (!videoRef.current || !canvasRef.current) return;
+    
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+
+    // Set canvas dimensions to match video
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    // Draw the current video frame
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Convert to base64
+    const photoData = canvas.toDataURL('image/jpeg');
+    
+    // Update captured photos
+    setCapturedPhotos(prev => {
+      const newPhotos = [...prev];
+      if (retakeIndex !== null) {
+        newPhotos[retakeIndex] = photoData;
+      } else {
+        newPhotos.push(photoData);
+      }
+      return newPhotos;
+    });
+
+    if (retakeIndex === null) {
+      setPhotoCount(prev => prev + 1);
+    }
+
+    // Setelah mengambil foto, set countdown lagi jika masih ada slot
+    if (retakeIndex === null && photoCount + 1 < selectedFrame.slots.length) {
+      setTimeout(() => setCountdown(5), 1000);
+    }
+  }, [setCapturedPhotos, retakeIndex, photoCount, selectedFrame]);
+
+  useEffect(() => {
+    if (countdown === 0) {
+      capturePhoto();
+    }
+  }, [countdown, capturePhoto]);
 
   return (
     <div className="fixed inset-0 flex flex-col items-center bg-gradient-to-br from-red-500 to-orange-700 text-white overflow-hidden">
@@ -808,7 +731,13 @@ const PhotoSessionScreen = () => {
       <div className="flex flex-col md:flex-row gap-6 w-full max-w-7xl flex-1 p-4">
         {/* Kotak Kiri: Live Preview & Countdown */}
         <div className="relative flex-1 bg-gray-900 rounded-xl overflow-hidden shadow-2xl border-4 border-white flex items-center justify-center">
-          <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover"></video>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            className="w-full h-full object-cover"
+            style={{ transform: 'scaleX(-1)' }}
+          />
           <canvas ref={canvasRef} className="hidden"></canvas>
 
           {/* Countdown Overlay */}
@@ -1133,7 +1062,7 @@ const FinalPreviewScreen = () => {
         <div className="flex flex-col items-center bg-gray-800 rounded-xl shadow-2xl p-4 border-4 border-white">
           <h2 className="text-2xl font-bold mb-4">Foto Dalam Frame</h2>
           {framedPhotoUrl ? (
-            <img src={framedPhotoUrl} alt="Final Framed Photo" className="w-full h-auto object-contain rounded-lg max-h-96" />
+            <img src={framedPhotoUrl} alt="Hasil akhir" className="w-full h-auto object-contain rounded-lg max-h-96" />
           ) : (
             <div className="w-full h-80 bg-gray-700 flex items-center justify-center text-gray-400 rounded-lg">
               Memproses foto...
@@ -1146,7 +1075,7 @@ const FinalPreviewScreen = () => {
         <div className="flex flex-col items-center bg-gray-800 rounded-xl shadow-2xl p-4 border-4 border-white">
           <h2 className="text-2xl font-bold mb-4">Foto Bergerak (GIF)</h2>
           {livePhotoUrl ? (
-            <img ref={gifPreviewRef} src={livePhotoUrl} alt="Live Photo GIF" className="w-full h-auto object-contain rounded-lg max-h-96" />
+            <img ref={gifPreviewRef} src={livePhotoUrl} alt="Hasil bergerak" className="w-full h-auto object-contain rounded-lg max-h-96" />
           ) : (
             <div className="w-full h-80 bg-gray-700 flex items-center justify-center text-gray-400 rounded-lg">
               Memproses GIF...
@@ -1158,7 +1087,7 @@ const FinalPreviewScreen = () => {
         <div className="flex flex-col items-center bg-gray-800 rounded-xl shadow-2xl p-4 border-4 border-white">
           <h2 className="text-2xl font-bold mb-4">Foto Polosan</h2>
           {plainPhotoUrl ? (
-            <img src={plainPhotoUrl} alt="Plain Photo" className="w-full h-auto object-contain rounded-lg max-h-96" />
+            <img src={plainPhotoUrl} alt="Hasil polos" className="w-full h-auto object-contain rounded-lg max-h-96" />
           ) : (
             <div className="w-full h-80 bg-gray-700 flex items-center justify-center text-gray-400 rounded-lg">
               Memproses foto...
