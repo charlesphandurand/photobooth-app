@@ -211,6 +211,11 @@ const BoardingScreen = () => {
 
   const releaseCamera = async () => {
     try {
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
+
       if (streamRef.current) {
         const tracks = streamRef.current.getTracks();
         tracks.forEach(track => {
@@ -222,11 +227,11 @@ const BoardingScreen = () => {
 
       if (videoRef.current) {
         videoRef.current.srcObject = null;
-        videoRef.current.load(); // Force video element to reset
+        videoRef.current.load();
       }
 
       // Tunggu lebih lama untuk memastikan kamera benar-benar dilepas
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, 2000));
     } catch (err) {
       console.error('Error releasing camera:', err);
     }
@@ -258,43 +263,71 @@ const BoardingScreen = () => {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
       
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        
-        // Tunggu video siap dengan timeout
-        await new Promise((resolve, reject) => {
-          const timeoutId = setTimeout(() => {
-            reject(new Error('Timeout waiting for video to be ready'));
-          }, 5000);
-
-          videoRef.current.onloadedmetadata = () => {
-            clearTimeout(timeoutId);
-            if (videoRef.current) {
-              videoRef.current.play()
-                .then(() => {
-                  setCameraLoading(false);
-                  setRetryCount(0);
-                  console.log('Video started playing');
-                  resolve();
-                })
-                .catch(err => {
-                  console.error('Error playing video:', err);
-                  reject(err);
-                });
-            } else {
-              reject(new Error('Video element is null'));
-            }
-          };
-
-          videoRef.current.onerror = (err) => {
-            clearTimeout(timeoutId);
-            console.error('Video error:', err);
-            reject(err);
-          };
-        });
-      } else {
+      if (!videoRef.current) {
         throw new Error('Video element not found');
       }
+
+      // Tambahkan event listener untuk track ended
+      stream.getTracks().forEach(track => {
+        track.onended = () => {
+          console.log('Track ended:', track.kind);
+          handleCameraError(new Error('Camera track ended unexpectedly'));
+        };
+      });
+
+      videoRef.current.srcObject = stream;
+      
+      // Tunggu video siap dengan timeout yang lebih lama
+      await new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          reject(new Error('Timeout waiting for video to be ready'));
+        }, 15000);
+
+        const checkVideoReady = () => {
+          if (videoRef.current && videoRef.current.readyState >= 2) {
+            clearTimeout(timeoutId);
+            videoRef.current.play()
+              .then(() => {
+                setCameraLoading(false);
+                setRetryCount(0);
+                console.log('Video started playing');
+                resolve();
+              })
+              .catch(err => {
+                console.error('Error playing video:', err);
+                reject(err);
+              });
+          } else {
+            setTimeout(checkVideoReady, 100);
+          }
+        };
+
+        videoRef.current.onloadedmetadata = () => {
+          checkVideoReady();
+        };
+
+        videoRef.current.onerror = (err) => {
+          clearTimeout(timeoutId);
+          console.error('Video error:', err);
+          reject(err);
+        };
+      });
+
+      // Tambahkan interval untuk memeriksa status stream
+      const checkStreamInterval = setInterval(() => {
+        if (streamRef.current) {
+          const tracks = streamRef.current.getTracks();
+          const activeTracks = tracks.filter(track => track.readyState === 'live');
+          if (activeTracks.length === 0) {
+            clearInterval(checkStreamInterval);
+            handleCameraError(new Error('Camera stream became inactive'));
+          }
+        }
+      }, 1000);
+
+      // Cleanup interval saat komponen unmount
+      return () => clearInterval(checkStreamInterval);
+
     } catch (err) {
       console.error("Error mengakses webcam:", err);
       handleCameraError(err);
@@ -315,6 +348,9 @@ const BoardingScreen = () => {
         break;
       case 'NotReadableError':
         errorMessage += 'Kamera sedang digunakan. Silakan:\n1. Tutup semua aplikasi yang menggunakan kamera\n2. Refresh halaman ini\n3. Jika masih bermasalah, restart browser';
+        // Tambahan: Coba lepaskan kamera dan tunggu lebih lama
+        await releaseCamera();
+        await new Promise(resolve => setTimeout(resolve, 3000));
         break;
       case 'Timeout':
         errorMessage += 'Waktu tunggu kamera habis. Silakan refresh halaman.';
@@ -324,16 +360,13 @@ const BoardingScreen = () => {
     }
     setMessage(errorMessage);
 
-    // Coba lepaskan kamera
-    await releaseCamera();
-
     // Retry logic dengan delay yang lebih lama
     if (retryCount < MAX_RETRIES) {
       setRetryCount(prev => prev + 1);
       retryTimeoutRef.current = setTimeout(() => {
         console.log(`Retrying camera access (attempt ${retryCount + 1}/${MAX_RETRIES})`);
         startWebcam();
-      }, RETRY_DELAY * (retryCount + 1));
+      }, RETRY_DELAY * (retryCount + 1) * 2); // Tambah delay untuk kasus NotReadableError
     } else {
       setMessage('Gagal mengakses kamera setelah beberapa percobaan. Silakan refresh halaman.');
     }
@@ -507,7 +540,7 @@ const PhotoSessionScreen = () => {
   const [cameraLoading, setCameraLoading] = useState(true);
   const [cameraError, setCameraError] = useState(false);
   const [message, setMessage] = useState('');
-  const [countdown, setCountdown] = useState(null);
+  const [countdown, setCountdown] = useState(3); // Mulai dari 3 detik
   const [photoCount, setPhotoCount] = useState(0);
   const [retakeIndex, setRetakeIndex] = useState(null);
   const [showFlash, setShowFlash] = useState(false);
@@ -526,6 +559,42 @@ const PhotoSessionScreen = () => {
   };
 
   const isAllPhotosTaken = photoCount >= selectedFrame?.slots?.length;
+
+  // Countdown otomatis saat masuk sesi
+  useEffect(() => {
+    if (countdown === null) return;
+    if (countdown > 0) {
+      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [countdown]);
+
+  // Ambil foto & flash setelah countdown selesai
+  useEffect(() => {
+    if (countdown === 0) {
+      setShowFlash(true);
+      setTimeout(() => {
+        capturePhoto();
+        setShowFlash(false);
+        setCountdown(null); // Hentikan countdown setelah foto diambil
+      }, 300); // Flash selama 300ms
+    }
+  }, [countdown]);
+
+  // Preview hasil foto di kotak kanan
+  useEffect(() => {
+    if (capturedPhotos.length > 0 && frameCanvasRef.current) {
+      const ctx = frameCanvasRef.current.getContext('2d');
+      const img = new Image();
+      img.src = capturedPhotos[capturedPhotos.length - 1];
+      img.onload = () => {
+        frameCanvasRef.current.width = img.width;
+        frameCanvasRef.current.height = img.height;
+        ctx.clearRect(0, 0, img.width, img.height);
+        ctx.drawImage(img, 0, 0, img.width, img.height);
+      };
+    }
+  }, [capturedPhotos]);
 
   const handleRetake = (index) => {
     setRetakeIndex(index);
@@ -559,6 +628,7 @@ const PhotoSessionScreen = () => {
         videoRef.current.load();
       }
 
+      // Tunggu lebih lama untuk memastikan kamera benar-benar dilepas
       await new Promise(resolve => setTimeout(resolve, 1000));
     } catch (err) {
       console.error('Error releasing camera:', err);
@@ -570,11 +640,16 @@ const PhotoSessionScreen = () => {
       setCameraLoading(true);
       setCameraError(false);
 
+      // Reset retry count if this is a fresh start
       if (retryCount >= MAX_RETRIES) {
         setRetryCount(0);
       }
 
+      // Pastikan kamera dilepas terlebih dahulu
       await releaseCamera();
+
+      // Tunggu sebentar sebelum mencoba mengakses kamera lagi
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
       const constraints = {
         video: {
@@ -588,42 +663,47 @@ const PhotoSessionScreen = () => {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
       
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        
-        await new Promise((resolve, reject) => {
-          const timeoutId = setTimeout(() => {
-            reject(new Error('Timeout waiting for video to be ready'));
-          }, 5000);
-
-          videoRef.current.onloadedmetadata = () => {
-            clearTimeout(timeoutId);
-            if (videoRef.current) {
-              videoRef.current.play()
-                .then(() => {
-                  setCameraLoading(false);
-                  setRetryCount(0);
-                  console.log('Video started playing');
-                  resolve();
-                })
-                .catch(err => {
-                  console.error('Error playing video:', err);
-                  reject(err);
-                });
-            } else {
-              reject(new Error('Video element is null'));
-            }
-          };
-
-          videoRef.current.onerror = (err) => {
-            clearTimeout(timeoutId);
-            console.error('Video error:', err);
-            reject(err);
-          };
-        });
-      } else {
+      if (!videoRef.current) {
         throw new Error('Video element not found');
       }
+
+      videoRef.current.srcObject = stream;
+      
+      // Tunggu video siap dengan timeout yang lebih lama
+      await new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          reject(new Error('Timeout waiting for video to be ready'));
+        }, 15000);
+
+        const checkVideoReady = () => {
+          if (videoRef.current && videoRef.current.readyState >= 2) {
+            clearTimeout(timeoutId);
+            videoRef.current.play()
+              .then(() => {
+                setCameraLoading(false);
+                setRetryCount(0);
+                console.log('Video started playing');
+                resolve();
+              })
+              .catch(err => {
+                console.error('Error playing video:', err);
+                reject(err);
+              });
+          } else {
+            setTimeout(checkVideoReady, 100);
+          }
+        };
+
+        videoRef.current.onloadedmetadata = () => {
+          checkVideoReady();
+        };
+
+        videoRef.current.onerror = (err) => {
+          clearTimeout(timeoutId);
+          console.error('Video error:', err);
+          reject(err);
+        };
+      });
     } catch (err) {
       console.error("Error mengakses webcam:", err);
       handleCameraError(err);
@@ -633,15 +713,38 @@ const PhotoSessionScreen = () => {
   const handleCameraError = async (err) => {
     setCameraError(true);
     setCameraLoading(false);
-    setMessage('Gagal mengakses kamera. Silakan refresh halaman.');
-    await releaseCamera();
+    
+    let errorMessage = 'Tidak dapat mengakses kamera: ';
+    switch(err.name) {
+      case 'NotAllowedError':
+        errorMessage += 'Izin kamera ditolak. Klik ikon kamera di address bar untuk mengizinkan.';
+        break;
+      case 'NotFoundError':
+        errorMessage += 'Kamera tidak ditemukan. Pastikan kamera terhubung.';
+        break;
+      case 'NotReadableError':
+        errorMessage += 'Kamera sedang digunakan. Silakan:\n1. Tutup semua aplikasi yang menggunakan kamera\n2. Refresh halaman ini\n3. Jika masih bermasalah, restart browser';
+        // Tambahan: Coba lepaskan kamera dan tunggu lebih lama
+        await releaseCamera();
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        break;
+      case 'Timeout':
+        errorMessage += 'Waktu tunggu kamera habis. Silakan refresh halaman.';
+        break;
+      default:
+        errorMessage += err.message;
+    }
+    setMessage(errorMessage);
 
+    // Retry logic dengan delay yang lebih lama
     if (retryCount < MAX_RETRIES) {
       setRetryCount(prev => prev + 1);
       retryTimeoutRef.current = setTimeout(() => {
         console.log(`Retrying camera access (attempt ${retryCount + 1}/${MAX_RETRIES})`);
         startWebcam();
-      }, RETRY_DELAY * (retryCount + 1));
+      }, RETRY_DELAY * (retryCount + 1) * 2); // Tambah delay untuk kasus NotReadableError
+    } else {
+      setMessage('Gagal mengakses kamera setelah beberapa percobaan. Silakan refresh halaman.');
     }
   };
 
