@@ -8,6 +8,10 @@
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^13.5.0",
+    "better-sqlite3": "^11.10.0",
+    "concurrently": "^8.2.2",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
     "firebase": "^11.9.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -19,7 +23,9 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "server": "node server.js",
+    "dev": "concurrently \"npm run server\" \"npm run start\""
   },
   "eslintConfig": {
     "extends": [

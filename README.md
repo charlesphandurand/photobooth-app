@@ -1,70 +1,90 @@
-# Getting Started with Create React App
+# Photobooth App
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+Aplikasi photobooth modern yang menggunakan React untuk frontend dan SQLite untuk backend.
 
-## Available Scripts
+## Fitur
 
-In the project directory, you can run:
+- 📸 Sesi foto dengan webcam
+- 🖼️ Pilihan frame yang menarik
+- 💾 Penyimpanan foto ke database SQLite
+- 📧 Pengiriman foto via email
+- 🎨 UI yang modern dan responsif
+- ⏱️ Timer sesi foto
 
-### `npm start`
+## Teknologi yang Digunakan
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+- **Frontend**: React 19, Tailwind CSS
+- **Backend**: Node.js, Express.js
+- **Database**: SQLite dengan better-sqlite3
+- **Webcam**: react-webcam
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+## Instalasi
 
-### `npm test`
+1. Clone repository ini
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+## Menjalankan Aplikasi
 
-### `npm run build`
+### Cara 1: Menjalankan Server dan Aplikasi Secara Bersamaan
+```bash
+npm run dev
+```
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+### Cara 2: Menjalankan Secara Terpisah
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+1. Jalankan server backend:
+   ```bash
+   npm run server
+   ```
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+2. Di terminal terpisah, jalankan aplikasi React:
+   ```bash
+   npm start
+   ```
 
-### `npm run eject`
+## Struktur Aplikasi
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+- `server.js` - Server Express dengan SQLite
+- `src/App.js` - Komponen utama React
+- `src/db.js` - Fungsi untuk komunikasi dengan server
+- `database.db` - Database SQLite
+- `frames/` - Direktori frame gambar
+- `photos/` - Direktori penyimpanan foto
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+## Endpoint API
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+- `GET /frames` - Mengambil daftar frame
+- `POST /save-photos` - Menyimpan foto
+- `POST /send-email` - Mengirim email
+- `GET /health` - Health check server
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+## Troubleshooting
 
-## Learn More
+### Masalah "Tidak ada frame yang tersedia"
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+1. Pastikan server berjalan di port 3001
+2. Cek apakah database terinisialisasi dengan benar
+3. Pastikan file frame ada di direktori `frames/`
+4. Restart server jika diperlukan
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+### Masalah Koneksi Database
 
-### Code Splitting
+1. Pastikan tidak ada proses lain yang menggunakan database
+2. Hapus file `database.db` dan restart server untuk membuat ulang
+3. Cek permission file dan direktori
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+## Pengembangan
 
-### Analyzing the Bundle Size
+Untuk pengembangan lebih lanjut:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+1. Tambahkan frame baru di direktori `frames/`
+2. Update data frame di `server.js`
+3. Modifikasi UI di `src/App.js`
+4. Tambahkan fitur baru sesuai kebutuhan
 
-### Making a Progressive Web App
+## Lisensi
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+MIT License
